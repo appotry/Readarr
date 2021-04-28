@@ -6,6 +6,7 @@ testPackageFolder='_tests'
 
 #Artifact variables
 artifactsFolder="_artifacts";
+packageFolder="_artifacts/packages";
 
 ProgressStart()
 {
@@ -116,7 +117,7 @@ PackageLinux()
 
     ProgressStart "Creating $runtime Package for $framework"
 
-    local folder=$artifactsFolder/$runtime/$framework/Readarr
+    local folder=$artifactsFolder/$framework/$runtime/Readarr
 
     PackageFiles "$folder" "$framework" "$runtime"
 
@@ -134,43 +135,21 @@ PackageLinux()
         cp $folder/libMonoPosixHelper.* $folder/Readarr.Update
     fi
 
+    find . -name "fpcalc" -exec chmod a+x {} \;
+    find . -name "Readarr" -exec chmod a+x {} \;
+    find . -name "Readarr.Update" -exec chmod a+x {} \;
+
     ProgressEnd "Creating $runtime Package for $framework"
-}
-
-PackageMacOS()
-{
-    local framework="$1"
-    
-    ProgressStart "Creating MacOS Package for $framework"
-
-    local folder=$artifactsFolder/macos/$framework/Readarr
-
-    PackageFiles "$folder" "$framework" "osx-x64"
-
-    echo "Removing Service helpers"
-    rm -f $folder/ServiceUninstall.*
-    rm -f $folder/ServiceInstall.*
-
-    echo "Removing Readarr.Windows"
-    rm $folder/Readarr.Windows.*
-
-    echo "Adding Readarr.Mono to UpdatePackage"
-    cp $folder/Readarr.Mono.* $folder/Readarr.Update
-    if [ "$framework" = "net5.0" ]; then
-        cp $folder/Mono.Posix.NETStandard.* $folder/Readarr.Update
-        cp $folder/libMonoPosixHelper.* $folder/Readarr.Update
-    fi
-
-    ProgressEnd 'Creating MacOS Package'
 }
 
 PackageMacOSApp()
 {
     local framework="$1"
+    local runtime="$2"
     
-    ProgressStart "Creating macOS App Package for $framework"
+    ProgressStart "Creating $runtime App Package for $framework"
 
-    local folder=$artifactsFolder/macos-app/$framework
+    local folder=$artifactsFolder/$framework/$runtime-app
 
     rm -rf $folder
     mkdir -p $folder
@@ -178,7 +157,7 @@ PackageMacOSApp()
     mkdir -p $folder/Readarr.app/Contents/MacOS
 
     echo "Copying Binaries"
-    cp -r $artifactsFolder/macos/$framework/Readarr/* $folder/Readarr.app/Contents/MacOS
+    cp -r $artifactsFolder/$framework/$runtime/Readarr/* $folder/Readarr.app/Contents/MacOS
 
     echo "Removing Update Folder"
     rm -r $folder/Readarr.app/Contents/MacOS/Readarr.Update
@@ -193,10 +172,10 @@ PackageWindows()
 
     ProgressStart "Creating $runtime Package for $framework"
 
-    local folder=$artifactsFolder/$runtime/$framework/Readarr
+    local folder=$artifactsFolder/$framework/$runtime/Readarr
     
     PackageFiles "$folder" "$framework" "$runtime"
-    cp -r $outputFolder/$framework-windows/$runtime/publish/* $folder
+    # cp -r $outputFolder/$framework-windows/$runtime/publish/* $folder
 
     echo "Removing Readarr.Mono"
     rm -f $folder/Readarr.Mono.*
@@ -213,6 +192,7 @@ Package()
 {
     local framework="$1"
     local runtime="$2"
+    local name="$3"
     local SPLIT
 
     IFS='-' read -ra SPLIT <<< "$runtime"
@@ -225,10 +205,16 @@ Package()
             PackageWindows "$framework" "$runtime"
             ;;
         osx)
-            PackageMacOS "$framework"
-            PackageMacOSApp "$framework"
+            PackageLinux "$framework" "$runtime"
+            PackageMacOSApp "$framework" "$runtime"
             ;;
     esac
+
+    Archive "$framework" "$runtime" "$name"
+    if [[ "$runtime" == osx-* ]];
+    then
+        Archive "$framework" "${runtime}-app" "${name/osx/osx-app}"
+    fi
 }
 
 PackageTests()
@@ -241,6 +227,47 @@ PackageTests()
     rm -f $testPackageFolder/$framework/$runtime/*.log.config
 
     ProgressEnd 'Creating Test Package'
+}
+
+CreateTgz()
+{
+    local source="$1"
+    local dest="$2"
+
+    tar -czf "${dest}.tar.gz" -C $source Readarr
+}
+
+CreateZip()
+{
+    local source="$1"
+    local dest="$2"
+
+    pushd $source > /dev/null
+    zip -qr "${dest}.zip" *
+    popd > /dev/null
+}
+
+
+Archive()
+{
+    local framework="$1"
+    local runtime="$2"
+    local name="$3"
+
+    ProgressStart "Creating $runtime archive for $framework"
+
+    local archive="$(pwd)/${packageFolder}/Readarr.${BRANCH}.${READARRVERSION}.${name}"
+
+    mkdir -p $packageFolder
+
+    if [[ "$runtime" == win-* || "$runtime" == *-app ]];
+    then
+        CreateZip $artifactsFolder/$framework/$runtime $archive
+    else
+        CreateTgz $artifactsFolder/$framework/$runtime $archive
+    fi
+
+    ProgressEnd "Finished creating $runtime archive for $framework"
 }
 
 # Use mono or .net depending on OS
@@ -362,19 +389,32 @@ then
 
     if [[ -z "$RID" || -z "$FRAMEWORK" ]];
     then
-        Package "net5.0" "win-x64"
-        Package "net5.0" "win-x86"
-        Package "net5.0" "linux-x64"
-        Package "net5.0" "linux-musl-x64"
-        Package "net5.0" "linux-arm64"
-        Package "net5.0" "linux-musl-arm64"
-        Package "net5.0" "linux-arm"
-        Package "net5.0" "osx-x64"
+        Package "net5.0" "win-x64" "windows-core-x64" &
+        pids[1]=$!
+        Package "net5.0" "win-x86" "windows-core-x86" &
+        pids[2]=$!
+        Package "net5.0" "linux-x64" "linux-core-x64" &
+        pids[3]=$!
+        Package "net5.0" "linux-musl-x64" "linux-musl-core-x64" &
+        pids[4]=$!
+        Package "net5.0" "linux-arm64" "linux-core-arm64" &
+        pids[5]=$!
+        Package "net5.0" "linux-musl-arm64" "linux-musl-core-arm64" &
+        pids[6]=$!
+        Package "net5.0" "linux-arm" "linux-core-arm" &
+        pids[7]=$!
+        Package "net5.0" "osx-x64" "osx-core-x64" &
+        pids[8]=$!
         if [ "$ENABLE_BSD" = "YES" ];
         then
-            Package "net5.0" "freebsd-x64"
+            Package "net5.0" "freebsd-x64" "freebsd-core-x64" &
+            pids[10]=$!
         fi
+
+        for pid in ${pids[*]}; do
+            wait $pid
+        done
     else
-        Package "$FRAMEWORK" "$RID"
+        Package "$FRAMEWORK" "$RID" "$RID"
     fi
 fi
